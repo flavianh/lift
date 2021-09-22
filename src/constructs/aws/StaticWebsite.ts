@@ -20,6 +20,7 @@ import type { ErrorResponse } from "@aws-cdk/aws-cloudfront/lib/distribution";
 import type { AwsProvider } from "@lift/providers";
 import { AwsConstruct } from "@lift/constructs/abstracts";
 import type { ConstructCommands } from "@lift/constructs";
+import { getPluginWriters } from "@serverless/utils/log";
 import { log } from "../../utils/logger";
 import { s3Sync } from "../../utils/s3-sync";
 import ServerlessError from "../../utils/error";
@@ -63,7 +64,7 @@ export class StaticWebsite extends AwsConstruct {
     public static commands: ConstructCommands = {
         upload: {
             usage: "Upload files directly to S3 without going through a CloudFormation deployment.",
-            handler: StaticWebsite.prototype.uploadWebsite,
+            handler: StaticWebsite.prototype.uploadWebsiteCommand,
         },
     };
 
@@ -179,8 +180,21 @@ export class StaticWebsite extends AwsConstruct {
         await this.uploadWebsite();
     }
 
-    async uploadWebsite(): Promise<void> {
-        log(`Deploying the static website '${this.id}'`);
+    async uploadWebsiteCommand(): Promise<void> {
+        const writer = getPluginWriters("serverless-lift");
+        writer.log.notice(`Deploying the static website '${this.id}'`);
+
+        const fileChangeCount = await this.uploadWebsite();
+
+        const domain = await this.getDomain();
+        if (domain !== undefined) {
+            writer.log.notice();
+            writer.log.notice.success(`Deployed https://${domain} ${chalk.gray(`(${fileChangeCount} files changed)`)}`);
+        }
+    }
+
+    private async uploadWebsite(): Promise<number> {
+        const writer = getPluginWriters("serverless-lift");
 
         const bucketName = await this.getBucketName();
         if (bucketName === undefined) {
@@ -190,20 +204,24 @@ export class StaticWebsite extends AwsConstruct {
             );
         }
 
-        log(`Uploading directory '${this.configuration.path}' to bucket '${bucketName}'`);
-        const { hasChanges } = await s3Sync({
+        const progress = writer.progress.get("lift-upload");
+        progress.notice(`Uploading directory '${this.configuration.path}' to bucket '${bucketName}'`);
+        writer.log.info(`Uploading directory '${this.configuration.path}' to bucket '${bucketName}'`);
+        // log(`Uploading directory '${this.configuration.path}' to bucket '${bucketName}'`);
+        const { hasChanges, fileChangeCount } = await s3Sync({
             aws: this.provider,
             localPath: this.configuration.path,
             bucketName,
         });
         if (hasChanges) {
+            progress.notice(`Clearing CloudFront DNS cache`);
+            writer.log.info(`Clearing CloudFront DNS cache`);
             await this.clearCDNCache();
         }
 
-        const domain = await this.getDomain();
-        if (domain !== undefined) {
-            log(`Deployed ${chalk.green(`https://${domain}`)}`);
-        }
+        progress.remove();
+
+        return fileChangeCount;
     }
 
     private async clearCDNCache(): Promise<void> {

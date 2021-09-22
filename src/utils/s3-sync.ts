@@ -13,8 +13,8 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { lookup } from "mime-types";
 import { chunk, flatten } from "lodash";
-import chalk from "chalk";
 import type { AwsProvider } from "@lift/providers";
+import { getPluginWriters } from "@serverless/utils/log";
 
 const readdir = util.promisify(fs.readdir);
 const stat = util.promisify(fs.stat);
@@ -36,10 +36,13 @@ export async function s3Sync({
     localPath: string;
     targetPathPrefix?: string;
     bucketName: string;
-}): Promise<{ hasChanges: boolean }> {
+}): Promise<{ hasChanges: boolean; fileChangeCount: number }> {
     let hasChanges = false;
+    let fileChangeCount = 0;
     const filesToUpload: string[] = await listFilesRecursively(localPath);
     const existingS3Objects = await s3ListAll(aws, bucketName, targetPathPrefix);
+
+    const log = getPluginWriters("serverless-lift").log;
 
     // Upload files by chunks
     let skippedFiles = 0;
@@ -60,14 +63,15 @@ export async function s3Sync({
                     }
                 }
 
-                console.log(`Uploading ${file}`);
+                log.info(`Uploading ${file}`);
                 await s3Put(aws, bucketName, targetKey, fileContent);
                 hasChanges = true;
+                fileChangeCount++;
             })
         );
     }
     if (skippedFiles > 0) {
-        console.log(chalk.gray(`Skipped uploading ${skippedFiles} unchanged files`));
+        log.info(`Skipped uploading ${skippedFiles} unchanged files`);
     }
 
     const targetKeys = filesToUpload.map((file) =>
@@ -75,12 +79,15 @@ export async function s3Sync({
     );
     const keysToDelete = findKeysToDelete(Object.keys(existingS3Objects), targetKeys);
     if (keysToDelete.length > 0) {
-        keysToDelete.map((key) => console.log(`Deleting ${key}`));
+        keysToDelete.map((key) => {
+            log.info(`Deleting ${key}`);
+            fileChangeCount++;
+        });
         await s3Delete(aws, bucketName, keysToDelete);
         hasChanges = true;
     }
 
-    return { hasChanges };
+    return { hasChanges, fileChangeCount };
 }
 
 async function listFilesRecursively(directory: string): Promise<string[]> {

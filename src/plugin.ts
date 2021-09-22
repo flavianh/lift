@@ -1,5 +1,4 @@
 import { flatten, get, has, merge } from "lodash";
-import chalk from "chalk";
 import type { AwsIamPolicyStatements } from "@serverless/typescript";
 import * as path from "path";
 import { readFileSync } from "fs";
@@ -308,14 +307,22 @@ class LiftPlugin {
                 continue;
             }
             const outputs = construct.outputs();
-            if (Object.keys(outputs).length > 0) {
-                console.log(chalk.yellow(`${id}:`));
+            if (Object.keys(outputs).length === 1) {
+                const resolver = Object.values(outputs)[0];
+                const output = await resolver();
+                if (output !== undefined) {
+                    this.serverless.addServiceOutputSection(id, output);
+                }
+            }
+            if (Object.keys(outputs).length > 1) {
+                const content: string[] = [];
                 for (const [name, resolver] of Object.entries(outputs)) {
                     const output = await resolver();
                     if (output !== undefined) {
-                        console.log(`  ${name}: ${output}`);
+                        content.push(`${name}: ${output}`);
                     }
                 }
+                this.serverless.addServiceOutputSection(id, content);
             }
         }
     }
